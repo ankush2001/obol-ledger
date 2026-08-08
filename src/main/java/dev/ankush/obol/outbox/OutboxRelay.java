@@ -36,6 +36,7 @@ public class OutboxRelay {
     private final RestClient http;
     private final Clock clock;
     private final String targetUrl;
+    private final String signature;
     private final int batchSize;
     private final Counter published;
     private final Counter failed;
@@ -45,11 +46,13 @@ public class OutboxRelay {
                        MeterRegistry meters,
                        Clock clock,
                        @Value("${obol.outbox.target-url:}") String targetUrl,
+                       @Value("${obol.outbox.signature:}") String signature,
                        @Value("${obol.outbox.batch-size:100}") int batchSize) {
         this.outbox = outbox;
         this.http = httpBuilder.build();
         this.clock = clock;
         this.targetUrl = targetUrl;
+        this.signature = signature;
         this.batchSize = batchSize;
         this.published = Counter.builder("obol.outbox.events").tag("result", "published").register(meters);
         this.failed = Counter.builder("obol.outbox.events").tag("result", "failed").register(meters);
@@ -91,6 +94,15 @@ public class OutboxRelay {
             http.post()
                     .uri(targetUrl)
                     .contentType(MediaType.APPLICATION_JSON)
+                    .headers(headers -> {
+                        // A shared secret, so the consumer can tell the ledger's
+                        // events from anyone else's. Without it a reconciliation
+                        // service will happily ingest fabricated entries and then
+                        // report a clean set of books.
+                        if (!signature.isBlank()) {
+                            headers.set("X-Obol-Signature", signature);
+                        }
+                    })
                     .body(body)
                     .retrieve()
                     .toBodilessEntity();

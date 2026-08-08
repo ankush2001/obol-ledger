@@ -1,0 +1,55 @@
+# Render Blueprint.
+#
+# Postgres is deliberately NOT declared here. Render's free Postgres expires
+# 30 days after creation and is then deleted with its data, which is useless
+# for a link on a CV. Neon's free tier is permanent, so the database lives
+# there and its connection string is supplied as an environment variable.
+#
+# See DEPLOY.md for the ten-minute walkthrough.
+
+services:
+  - type: web
+    name: obol-ledger
+    runtime: docker
+    plan: free
+    region: oregon
+    dockerfilePath: ./Dockerfile
+    healthCheckPath: /actuator/health/readiness
+    autoDeploy: true
+
+    envVars:
+      # Neon's Java connection string, pasted whole. It carries user and
+      # password as query parameters, so those are set separately below only
+      # if you are using a provider that does not.
+      - key: DATABASE_URL
+        sync: false
+      - key: DATABASE_USER
+        sync: false
+      - key: DATABASE_PASSWORD
+        sync: false
+
+      # Upstash. Optional -- without it the ledger runs and reads balances
+      # straight from Postgres, logging a warning. It is a cache, not a
+      # dependency, and the code is written so that stays true in production.
+      - key: REDIS_URL
+        sync: false
+
+      # Where posting events are delivered. Point it at accord-recon once that
+      # is deployed; left unset the outbox simply accumulates, and the backlog
+      # is visible in /v1/admin/verify.
+      - key: OUTBOX_TARGET_URL
+        sync: false
+      # Must equal accord-recon's ACCORD_WEBHOOK_SECRET, which Render
+      # generates on that service. Copy it across.
+      - key: OUTBOX_SIGNATURE
+        sync: false
+
+      # Free instances get one shared vCPU and 512MB. Neon's free tier also
+      # caps connections well below where a larger pool would help, and every
+      # write here holds row locks anyway -- more connections would only
+      # deepen the lock queue.
+      - key: DB_POOL_SIZE
+        value: "5"
+
+      - key: JAVA_OPTS
+        value: "-XX:MaxRAMPercentage=70 -XX:+UseSerialGC -XX:TieredStopAtLevel=1"
