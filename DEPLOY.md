@@ -64,6 +64,17 @@ OUTBOX_SIGNATURE   = <the ACCORD_WEBHOOK_SECRET you copied>
 Flyway migrates on first boot; Alembic does the same for accord. Neither needs
 a separate release step at this size.
 
+## Building the images locally
+
+Render builds with BuildKit already. To build on your own machine you need the
+buildx plugin (`brew install docker-buildx`), because the Python image mounts a
+uv cache:
+
+```bash
+docker build -t obol-ledger:local .                          # ledger
+DOCKER_BUILDKIT=1 docker build -t accord-recon:local .       # recon
+```
+
 ## 5. Prove it works
 
 ```bash

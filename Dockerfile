@@ -17,11 +17,20 @@ COPY src ./src
 RUN mvn -B -q clean package -DskipTests
 
 # -------------------------------------------------------------- runtime ----
-FROM eclipse-temurin:17-jre-alpine AS runtime
+# jammy, not alpine. Temurin publishes its Alpine images for x86-64 only, so
+# `-jre-alpine` builds fine on a CI runner and fails outright on an Apple
+# Silicon laptop -- a base image you cannot build on your own machine is the
+# wrong base image, whatever it saves. Costs roughly 80MB.
+FROM eclipse-temurin:17-jre-jammy AS runtime
+
+# curl for the healthcheck below; Ubuntu's slim JRE image does not ship one.
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends curl \
+ && rm -rf /var/lib/apt/lists/*
 
 # Never root. A ledger process has no business being able to write to its own
 # image, and this costs nothing.
-RUN addgroup -S obol && adduser -S obol -G obol
+RUN groupadd --system obol && useradd --system --gid obol --create-home obol
 USER obol
 
 WORKDIR /app
@@ -39,7 +48,10 @@ ENV JAVA_OPTS="-XX:MaxRAMPercentage=70 -XX:+UseSerialGC -XX:TieredStopAtLevel=1"
 # on a single shared vCPU, G1's background threads and the C2 compiler cost
 # more than they return. Drop both on anything larger.
 
-HEALTHCHECK --interval=30s --timeout=3s --start-period=40s --retries=3 \
-  CMD wget -q -O /dev/null http://localhost:8080/actuator/health/readiness || exit 1
+# start-period is generous on purpose: a JVM cold-starting on a shared vCPU
+# takes far longer than the steady-state check suggests, and a short grace
+# window just restarts a container that was booting normally.
+HEALTHCHECK --interval=30s --timeout=3s --start-period=90s --retries=3 \
+  CMD curl -fsS http://localhost:8080/actuator/health/readiness || exit 1
 
 ENTRYPOINT ["sh", "-c", "exec java $JAVA_OPTS -jar app.jar"]
