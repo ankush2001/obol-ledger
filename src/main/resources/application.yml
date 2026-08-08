@@ -1,0 +1,93 @@
+spring:
+  application:
+    name: obol-ledger
+
+  datasource:
+    url: ${DATABASE_URL:jdbc:postgresql://localhost:55432/obol}
+    username: ${DATABASE_USER:obol}
+    password: ${DATABASE_PASSWORD:obol}
+    hikari:
+      # Small on purpose. Every write transaction holds row locks on the
+      # accounts it touches, so past a certain point more connections buy no
+      # extra throughput and only deepen the lock queue. Free-tier Postgres
+      # also caps total connections well below where this would matter.
+      maximum-pool-size: ${DB_POOL_SIZE:10}
+      minimum-idle: 2
+      connection-timeout: 10000
+
+  flyway:
+    enabled: true
+    baseline-on-migrate: true
+
+  data:
+    redis:
+      url: ${REDIS_URL:redis://localhost:56379}
+      timeout: 1s
+      # A slow cache must never become a slow ledger: give up quickly and read
+      # from Postgres instead.
+      connect-timeout: 1s
+
+  jackson:
+    default-property-inclusion: non_null
+    serialization:
+      write-dates-as-timestamps: false
+
+  threads:
+    virtual:
+      # Every request spends its time waiting on Postgres, which is precisely
+      # what virtual threads are for.
+      enabled: true
+
+server:
+  port: ${PORT:8080}
+  shutdown: graceful
+  error:
+    include-message: never
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,prometheus,metrics
+  endpoint:
+    health:
+      probes:
+        enabled: true
+      show-details: never
+  health:
+    # Redis being down degrades the ledger, it does not break it -- so it must
+    # not make the pod look unhealthy and get it restarted.
+    redis:
+      enabled: false
+  metrics:
+    tags:
+      application: obol-ledger
+
+obol:
+  cache:
+    enabled: ${CACHE_ENABLED:true}
+    balance-ttl: PT5M
+  idempotency:
+    retention: PT24H
+    purge-interval: 3600000
+  expiry:
+    poll-interval: 10000
+    batch-size: 200
+  outbox:
+    # Where posting events are delivered. Left blank the relay stays idle and
+    # events accumulate; the backlog is reported by /v1/admin/verify.
+    target-url: ${OUTBOX_TARGET_URL:}
+    poll-interval: 2000
+    batch-size: 100
+  http:
+    connect-timeout: PT2S
+    read-timeout: PT5S
+
+springdoc:
+  swagger-ui:
+    path: /docs
+    operations-sorter: method
+
+logging:
+  level:
+    dev.ankush.obol: ${LOG_LEVEL:INFO}

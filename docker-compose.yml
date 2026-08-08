@@ -1,0 +1,36 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: obol-postgres
+    environment:
+      POSTGRES_USER: obol
+      POSTGRES_PASSWORD: obol
+      POSTGRES_DB: obol
+    ports:
+      # 55432, not 5432: this machine already runs a native PostgreSQL 17 that
+      # owns the default port, and a container quietly losing that race is a
+      # confusing "password authentication failed" rather than a bind error.
+      - "55432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./scripts/init-databases.sh:/docker-entrypoint-initdb.d/init-databases.sh:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U obol -d obol"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  redis:
+    image: redis:7-alpine
+    container_name: obol-redis
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    ports:
+      - "56379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+volumes:
+  pgdata:

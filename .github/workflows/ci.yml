@@ -1,0 +1,111 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  # A newer push makes an in-flight run irrelevant; cancel it rather than
+  # queueing behind it.
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Build and test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+          cache: maven
+
+      # Testcontainers starts Postgres and Redis itself; the runner's Docker
+      # daemon is all it needs, and that is already present.
+      - name: Run tests
+        run: mvn -B verify
+
+      - name: Publish test report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: surefire-reports
+          path: target/surefire-reports/
+          retention-days: 7
+
+  end-to-end:
+    name: End-to-end against a real stack
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: obol
+          POSTGRES_PASSWORD: obol
+          POSTGRES_DB: obol
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U obol -d obol"
+          --health-interval 5s --health-timeout 3s --health-retries 20
+      redis:
+        image: redis:7-alpine
+        ports: ['6379:6379']
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s --health-timeout 3s --health-retries 20
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+          cache: maven
+
+      - name: Build
+        run: mvn -B -q package -DskipTests
+
+      - name: Start the ledger
+        env:
+          DATABASE_URL: jdbc:postgresql://localhost:5432/obol
+          DATABASE_USER: obol
+          DATABASE_PASSWORD: obol
+          REDIS_URL: redis://localhost:6379
+        run: |
+          java -jar target/obol-ledger-*.jar > ledger.log 2>&1 &
+          for i in $(seq 1 60); do
+            curl -sf http://localhost:8080/actuator/health/readiness && break
+            sleep 1
+          done
+
+      # The same script a human runs locally. It exercises idempotent replay,
+      # key reuse, overdraft refusal, three-leg splits, authorise/capture,
+      # authorise/void, and the whole-ledger integrity check -- against a real
+      # process over real HTTP, which the unit and integration tests do not.
+      - name: Walk the API
+        run: ./scripts/demo.sh http://localhost:8080
+
+      - name: Ledger logs
+        if: failure()
+        run: cat ledger.log
+
+  docker:
+    name: Docker image builds
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - name: Build image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: false
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

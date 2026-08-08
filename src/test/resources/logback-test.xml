@@ -1,0 +1,18 @@
+<configuration>
+  <appender name="CONSOLE" class="ch.qos.logback.core.ConsoleAppender">
+    <encoder>
+      <pattern>%d{HH:mm:ss.SSS} %-5level %logger{28} - %msg%n</pattern>
+    </encoder>
+  </appender>
+
+  <!-- Testcontainers is quiet by default about *why* it could not find Docker;
+       it takes DEBUG to see which strategies it tried and how each failed. -->
+  <logger name="org.testcontainers" level="${TC_LOG_LEVEL:-INFO}"/>
+  <logger name="dev.ankush.obol" level="INFO"/>
+  <logger name="org.springframework" level="WARN"/>
+  <logger name="com.zaxxer.hikari" level="WARN"/>
+
+  <root level="INFO">
+    <appender-ref ref="CONSOLE"/>
+  </root>
+</configuration>
