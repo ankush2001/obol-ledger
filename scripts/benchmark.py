@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import statistics
 import sys
 import time
@@ -149,12 +150,103 @@ def report(cached: Result, uncached: Result) -> None:
     print("  Quote the number you measured on the hardware you measured it on.")
 
 
+def scrape_histogram(base: str, uri: str) -> dict[str, float]:
+    """Read one endpoint's server-side latency distribution from Prometheus.
+
+    Percentiles are computed from the histogram buckets rather than read from
+    `quantile` lines. Micrometer only emits those when the percentiles property
+    binds, which is fragile -- and buckets are what a real Prometheus would use
+    anyway, so this works wherever the histogram is enabled.
+
+    The numbers exclude the network entirely, which is the only way to compare
+    two endpoints on a host that is 100ms away.
+    """
+    with urllib.request.urlopen(f"{base}/actuator/prometheus", timeout=30) as response:
+        text = response.read().decode()
+
+    buckets: list[tuple[float, float]] = []
+    count = total = maximum = 0.0
+
+    for line in text.splitlines():
+        if not line.startswith("http_server_requests_seconds"):
+            continue
+        found = re.search(r'uri="([^"]+)"', line)
+        if not found or found.group(1) != uri:
+            continue
+        try:
+            value = float(line.rsplit(" ", 1)[1])
+        except ValueError:
+            continue
+
+        if line.startswith("http_server_requests_seconds_bucket"):
+            le = re.search(r'le="([^"]+)"', line)
+            if le:
+                buckets.append((float(le.group(1)), value))
+        elif line.startswith("http_server_requests_seconds_count"):
+            count = value
+        elif line.startswith("http_server_requests_seconds_sum"):
+            total = value
+        elif line.startswith("http_server_requests_seconds_max"):
+            maximum = value
+
+    if not count:
+        return {}
+
+    def percentile(q: float) -> float:
+        target = count * q
+        for le, cumulative in sorted(buckets):
+            if cumulative >= target:
+                return le * 1000
+        return float("inf")
+
+    return {
+        "count": count,
+        "mean": total / count * 1000,
+        "p50": percentile(0.50),
+        "p95": percentile(0.95),
+        "p99": percentile(0.99),
+        "max": maximum * 1000,
+    }
+
+
+def report_server_side(base: str, wallet: str) -> None:
+    cached = scrape_histogram(base, "/v1/accounts/{code}/balance")
+    uncached = scrape_histogram(base, "/v1/accounts/{code}/balance/uncached")
+
+    print()
+    print("Measured inside the service, network excluded:")
+    print(f"{'':22}{'mean':>10}{'p50':>10}{'p95':>10}{'p99':>10}{'max':>10}{'n':>8}")
+    print("-" * 80)
+    for label, m in (("uncached (Postgres)", uncached), ("cached (Redis)", cached)):
+        if not m.get("count"):
+            print(f"{label:22}  no samples recorded")
+            continue
+        print(f"{label:22}{m['mean']:>9.2f}ms{m['p50']:>8.2f}ms{m['p95']:>8.2f}ms"
+              f"{m['p99']:>8.2f}ms{m['max']:>8.1f}ms{int(m['count']):>8}")
+
+    if cached.get("mean") and uncached.get("mean"):
+        print()
+        for name, key in (("mean", "mean"), ("p50", "p50"), ("p95", "p95"), ("p99", "p99")):
+            a, b = uncached.get(key), cached.get(key)
+            if a and b:
+                print(f"  {name:5} {(1 - b / a) * 100:+6.1f}%   ({a:.2f}ms -> {b:.2f}ms)")
+    print()
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("base", nargs="?", default=DEFAULT_BASE)
     parser.add_argument("--requests", type=int, default=2000)
     parser.add_argument("--concurrency", type=int, default=16)
     parser.add_argument("--rounds", type=int, default=4)
+    parser.add_argument(
+        "--server-side",
+        action="store_true",
+        help="Report latency measured inside the service, from /actuator/prometheus, "
+             "instead of from this client. Use this against a deployed instance: over "
+             "the internet the round trip is ~100ms and swamps the few milliseconds "
+             "the cache actually saves.",
+    )
     args = parser.parse_args()
 
     print(f"seeding an account with history on {args.base} ...")
@@ -191,7 +283,10 @@ def main() -> int:
             accumulator.errors += r.errors
             accumulator.wall_seconds += r.wall_seconds
 
-    report(cached, uncached)
+    if args.server_side:
+        report_server_side(args.base, wallet)
+    else:
+        report(cached, uncached)
     return 0
 
 

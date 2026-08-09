@@ -152,35 +152,58 @@ sweeper expires it if nobody does either.
 
 ---
 
-## What the cache is actually worth
+## What the cache is actually worth — and where it isn't
 
 The service exposes the same balance twice — `/balance` reads through Redis,
 `/balance/uncached` always hits Postgres — so the benchmark measures an
 endpoint against its own uncached twin on the same running instance, in
 interleaved rounds.
 
+**Locally**, with Postgres and Redis both in a VM on the same machine:
+
 ```
                             mean       p50       p95       p99       req/s
 uncached (Postgres)        6.21ms    5.49ms   11.51ms   16.59ms        2516
 cached (Redis)             5.78ms    5.47ms    8.51ms   12.02ms        2725
-
-  mean latency    +7.1%
-  p95 latency    +26.0%
-  throughput      +8.3%
+                                              −26.0%
 ```
 
-*8,000 requests, concurrency 16, Apple M-series, Postgres and Redis both in a
-local VM. Reproduce with `./scripts/benchmark.py`.*
+**Deployed** to Render free tier, Postgres on Neon and Redis on a separate
+Render instance, measured *server-side* via Micrometer (`--server-side`), so
+the ~100ms of internet between the client and Oregon is excluded:
 
-Read that honestly: **the cache buys tail latency, not headline latency.**
-With both stores on localhost, Postgres answers a primary-key lookup in about
-as long as Redis does, so the p50 barely moves; what improves is the p95, where
-the database was queueing. The gap widens when the database is a network hop
-away — which is the normal production case, and the one worth quoting only
-after measuring it there.
+```
+                            mean       p50       p95       p99       max
+uncached (Postgres)       60.81ms    5.00ms  357.91ms  536.87ms   999.6ms
+cached (Redis)           137.61ms    6.99ms  715.83ms 1431.66ms  1997.9ms
+                                     +39.8%   +100.0%   +166.7%
+```
 
-A number like "40% faster" is easy to write and impossible to defend. This is
-what the measurement actually said.
+The cache is **slower in production, at every percentile.** So it is turned
+off there — `CACHE_ENABLED=false`.
+
+That is not a bug, it is the measurement doing its job. A cache only wins when
+it replaces something expensive, and the query it replaces here is a
+primary-key lookup on a small table over an already-warm connection pool, to a
+database one network hop away — roughly a millisecond. Redis is *also* one
+network hop away, and adds JSON deserialisation on top. There was never much
+to win, and on a 0.1-CPU instance the overhead is what dominates.
+
+The local numbers were real too, and the difference between the two
+environments is the whole lesson: locally Postgres was contended enough that
+removing a query helped the tail; deployed, it wasn't.
+
+Two things worth noticing in the deployed figures. The p95 and p99 are enormous
+for *both* paths — that is 24 concurrent requests against a shared 0.1 vCPU,
+not a database problem. And the client-side benchmark could never have shown
+any of this: over the public internet the round trip swamps a difference of
+two milliseconds, which is why `--server-side` reads Micrometer's histograms
+instead of trusting its own stopwatch.
+
+The code stays. It is exercised by tests, it degrades correctly when Redis is
+unavailable, and on a larger instance — or in front of a query that actually
+costs something — it would earn its place. Keeping a measured-off feature is
+cheaper than pretending the measurement didn't happen.
 
 ---
 
