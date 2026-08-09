@@ -2,6 +2,12 @@
 
 A double-entry ledger and settlement engine, in Java and Spring Boot.
 
+**Live:** <https://obol-ledger.onrender.com> · [API docs](https://obol-ledger.onrender.com/docs) · [integrity check](https://obol-ledger.onrender.com/v1/admin/verify)
+
+> Running on a free instance, which sleeps after 15 minutes idle. The first
+> request wakes it and a cold-starting JVM takes roughly 40 seconds to answer.
+> It is asleep, not broken.
+
 Not a CRUD service with a `balance` column. Money is recorded the way an
 accountant would record it — as balanced journal entries that are never edited
 — and the rule that keeps it correct is enforced by PostgreSQL, not by the
